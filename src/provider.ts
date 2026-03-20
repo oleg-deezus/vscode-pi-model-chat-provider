@@ -128,10 +128,10 @@ export class PiChatProvider implements vscode.LanguageModelChatProvider {
         try {
             result = await this.pool.getOrCreate(messages, modelId);
         } catch (error) {
-            // Handle context-only messages (no user query) gracefully
-            if (error instanceof Error && error.message.includes('No messages with text content')) {
-                debug('[Pi Provider] Context-only message received (no <user_query>) - skipping');
-                return; // Silently skip - VS Code will send the actual query in next call
+            // Handle empty messages gracefully
+            if (error instanceof Error && error.message.includes('No user messages found')) {
+                debug('[Pi Provider] No user messages found - skipping');
+                return;
             }
             throw error;
         }

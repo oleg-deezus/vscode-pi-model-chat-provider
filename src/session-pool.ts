@@ -22,7 +22,7 @@ export class SessionPool {
     private statusBarHideTimer: NodeJS.Timeout | undefined;
     private modelCache: any[] | null = null;  // Cache available models to avoid repeated Pi startups
     private metadataBridge: PiBridge | null = null;  // Persistent bridge for model enumeration
-    private pendingContext: string = '';  // Store context-only messages to prepend to next query
+    private pendingContext: string = '';  // Store context for potential multi-message scenarios
 
     constructor(
         private config: PiConfig,
@@ -60,11 +60,6 @@ export class SessionPool {
         // Extract text from all user messages and filter out empty ones
         const allMessageTexts = userMessages.map(msg => this.extractText(msg));
         const nonEmptyMessages = allMessageTexts.filter(text => text.length > 0);
-        
-        if (nonEmptyMessages.length === 0) {
-            debug('[SessionPool] ⚠️  All messages are context-only (no <user_query> tags) - SKIPPING this request');
-            throw new Error('No messages with text content found');
-        }
 
         debug('[SessionPool] Found messages with user queries:', nonEmptyMessages.length);
 
@@ -300,41 +295,43 @@ export class SessionPool {
         }
 
         let fullText = textParts.join('\n');
-        
+
         debug('[SessionPool] extractText - raw text:', {
             length: fullText.length,
             preview: fullText.substring(0, 500),
             hasPromptTags: fullText.includes('<prompt>'),
             hasUserQueryTags: fullText.includes('<user_query>')
         });
-        
-        // VS Code sends messages in two formats:
-        // 1. Context-only: <environment_info>, <workspace_info> (no user query)
-        //    -> These are sent BEFORE the actual user message, just providing context
-        //    -> We should STORE these and prepend to the next message
-        // 2. With user query: <context>, <reminderInstructions>, <user_query>
-        //    -> This is the actual user question - send everything with prepended context
-        
-        // Check if this is a context-only message (no <user_query> tag)
+
+        // VS Code may or may not include <user_query> tags depending on the model:
+        // - Copilot models: include <user_query> tags
+        // - Other models (Pi, Ollama, etc.): don't include these tags
         if (!fullText.includes('<user_query>')) {
-            debug('[SessionPool] extractText - STORING context-only message for next query');
+            // No tags - might be context-only or non-Copilot model
+            // Store for potential combination with next message
+            debug('[SessionPool] extractText - No <user_query> tags found, returning full text');
             this.pendingContext = fullText;
-            return '';  // Return empty to filter out
+            return fullText;
         }
-        
-        // Message has user_query - combine with any pending context
-        let finalMessage = fullText;
-        if (this.pendingContext) {
-            debug('[SessionPool] extractText - PREPENDING stored context to user query');
-            finalMessage = this.pendingContext + '\n' + fullText;
-            this.pendingContext = '';  // Clear after using
+
+        // Has tags - extract user query (for Copilot models)
+        const userQueryMatch = fullText.match(/<user_query>([\s\S]*?)<\/user_query>/);
+        if (userQueryMatch) {
+            let result = userQueryMatch[1].trim();
+            // Combine with any pending context
+            if (this.pendingContext) {
+                debug('[SessionPool] extractText - PREPENDING stored context to user query');
+                result = this.pendingContext + '\n' + result;
+                this.pendingContext = '';
+            }
+            debug('[SessionPool] extractText - sending to Pi:', {
+                length: result.length,
+                hasPendingContext: result !== userQueryMatch[1].trim()
+            });
+            return result;
         }
-        
-        debug('[SessionPool] extractText - sending full message to Pi:', {
-            length: finalMessage.length,
-            hasPendingContext: finalMessage !== fullText
-        });
-        return finalMessage;
+
+        return fullText;
     }
 
     async getAvailableModels(): Promise<any[]> {
